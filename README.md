@@ -2,7 +2,7 @@
 
 The best AI agents already use filesystems as memory. Now your agent can too.
 
-memoryfs gives your agent a persistent virtual filesystem backed by your own database. Agents use familiar file operations — `read`, `write`, `ls`, `grep` — while data lives in SQLite or Postgres.
+memoryfs gives your agent a persistent virtual filesystem backed by your own database. Agents use familiar file operations (`read`, `write`, `ls`, `grep`) while data lives in SQLite or Postgres.
 
 ```bash
 npm install memoryfs better-sqlite3
@@ -22,9 +22,9 @@ Persistent memory that survives restarts, multi-tenant by default, no external s
 
 ## Why filesystems?
 
-Agents like Claude Code already store memory in files (`~/.claude/`). The pattern works because agents understand files natively — no new API to learn, no retrieval pipeline to build.
+Agents like Claude Code already store memory in files (`~/.claude/`). The pattern works because agents understand files natively. No new API to learn, no retrieval pipeline to build.
 
-A real filesystem per user doesn't work well in production (isolation, backups, scaling). memoryfs gives you the same interface backed by a single database table. No API keys, no hosted service — just a library.
+A real filesystem per user doesn't work well in production (isolation, backups, scaling). memoryfs gives you the same interface backed by a single database table. No API keys, no hosted service, just a library.
 
 ## Use with any AI SDK
 
@@ -123,7 +123,7 @@ const result = await callTool(fs, "write", { path: "/notes.md", content: "hello"
 
 ## Multi-tenancy
 
-One database, many users. Each `FileSystem` is scoped by user ID — full isolation at the DB layer:
+One database, many users. Each `FileSystem` is scoped by user ID with full isolation at the DB layer:
 
 ```ts
 const db = await openDatabase("memory.db");
@@ -141,7 +141,7 @@ In production you likely already have a Postgres database.
 **Option A: Drizzle**
 
 ```ts
-// db/schema.ts — add to your existing Drizzle schema
+// db/schema.ts - add to your existing Drizzle schema
 import { nodesTable } from "memoryfs/drizzle";
 export { nodesTable };
 ```
@@ -183,14 +183,14 @@ class MyDatabase implements Database {
 const db = await openDatabase("app.db", { tableName: "agent_files" });
 ```
 
-Works with all approaches — constructors, Drizzle (`createNodesTable("agent_files")`), and raw SQL (`getPostgresSchema("agent_files")`).
+Works with all approaches: constructors, Drizzle (`createNodesTable("agent_files")`), and raw SQL (`getPostgresSchema("agent_files")`).
 
 ## Safety
 
-- **File size limits** — Default 10 MB max per file. Configure via `new FileSystem(db, userId, { maxFileSize: ... })`.
-- **Optimistic locking** — Concurrent edits are detected and rejected (version-checked at the DB level).
-- **SQL injection prevention** — Parameterized queries everywhere. Table names validated against a strict regex whitelist.
-- **Tenant isolation** — All queries scoped by `user_id`. No cross-tenant access possible at the DB layer.
+- **File size limits**: Default 10 MB max per file. Configure via `new FileSystem(db, userId, { maxFileSize: ... })`.
+- **Optimistic locking**: Concurrent edits are detected and rejected (version-checked at the DB level).
+- **SQL injection prevention**: Parameterized queries everywhere. Table names validated against a strict regex whitelist.
+- **Tenant isolation**: All queries scoped by `user_id`. No cross-tenant access possible at the DB layer.
 
 ## API
 

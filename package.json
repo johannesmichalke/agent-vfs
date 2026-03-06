@@ -1,7 +1,7 @@
 {
   "name": "memoryfs",
   "version": "0.1.0",
-  "description": "Persistent virtual filesystem for AI agents — backed by SQLite or Postgres",
+  "description": "Persistent virtual filesystem for AI agents, backed by SQLite or Postgres",
   "type": "module",
   "main": "dist/lib.js",
   "types": "dist/lib.d.ts",
