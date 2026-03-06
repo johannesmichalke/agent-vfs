@@ -18,18 +18,13 @@ await fs.write("/notes.md", "# Meeting Notes\n- Ship memoryfs");
 const content = await fs.read("/notes.md");
 ```
 
-That's it. Your agent now has persistent memory that survives restarts, scales to millions of users, and lives in your database.
+Persistent memory that survives restarts, multi-tenant by default, no external services. One table in your database.
 
 ## Why filesystems?
 
-Claude Code stores its memory in `~/.claude/`. OpenClaw uses a filesystem. The pattern works because agents already understand files — no new API to learn, no embeddings to tune, no retrieval pipeline to debug.
+Agents like Claude Code already store memory in files (`~/.claude/`). The pattern works because agents understand files natively — no new API to learn, no retrieval pipeline to build.
 
-But a real filesystem per user is a nightmare in production: permissions, isolation, backups, scaling. memoryfs gives you the same interface backed by a single database table.
-
-**Compare to alternatives:**
-- **Mem0, Zep** — Another API key, another bill, another vendor. memoryfs is a library.
-- **Vector databases** — Agents don't think in embeddings. They think in files.
-- **Raw database** — You'd need to build the filesystem abstraction yourself. We already did.
+A real filesystem per user doesn't work well in production (isolation, backups, scaling). memoryfs gives you the same interface backed by a single database table. No API keys, no hosted service — just a library.
 
 ## Use with any AI SDK
 
