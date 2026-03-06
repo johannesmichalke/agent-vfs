@@ -105,7 +105,85 @@ await readTool.call(fs, { path: "/notes.md" }); // { text: "...", isError?: bool
 const result = await callTool(fs, "write", { path: "/notes.md", content: "hello" });
 ```
 
+## Example: chat agent with persistent memory
+
+The most common pattern is an agent that loads its memory at the start of each session, then reads and writes files as it chats.
+
+```ts
+import Anthropic from "@anthropic-ai/sdk";
+import { FileSystem, openDatabase, anthropic } from "agent-vfs";
+
+const db = await openDatabase("memory.db");
+const fs = new FileSystem(db, userId);
+const { tools, handleToolCall } = anthropic(fs);
+
+// Boot: load the agent's memory into the system prompt
+let memory = "";
+try {
+  memory = await fs.read("/memory.md");
+} catch {
+  memory = "(no memory yet)";
+}
+
+const messages: Anthropic.MessageParam[] = [];
+const system = `You are a helpful assistant with persistent memory.
+Your current memory:
+${memory}
+
+You have filesystem tools. Use them to remember things across sessions.
+Save important facts to /memory.md. Organize notes in folders as needed.`;
+
+// Chat loop
+while (true) {
+  const userInput = await getInput(); // your input method
+  messages.push({ role: "user", content: userInput });
+
+  let response = await new Anthropic().messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 4096,
+    system,
+    messages,
+    tools,
+  });
+
+  // Handle tool calls until the model is done
+  while (response.stop_reason === "tool_use") {
+    const toolResults: Anthropic.MessageParam = { role: "user", content: [] };
+    for (const block of response.content) {
+      if (block.type === "tool_use") {
+        const result = await handleToolCall(block.name, block.input);
+        (toolResults.content as Anthropic.ToolResultBlockParam[]).push({
+          type: "tool_result",
+          tool_use_id: block.id,
+          content: result.text,
+        });
+      }
+    }
+    messages.push({ role: "assistant", content: response.content });
+    messages.push(toolResults);
+    response = await new Anthropic().messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 4096,
+      system,
+      messages,
+      tools,
+    });
+  }
+
+  const text = response.content
+    .filter((b): b is Anthropic.TextBlock => b.type === "text")
+    .map((b) => b.text)
+    .join("");
+  console.log(text);
+  messages.push({ role: "assistant", content: response.content });
+}
+```
+
+The agent will automatically use `write`, `read`, `ls`, and other tools to manage its own memory. On the next session, the boot step loads everything back.
+
 ## Tools (11)
+
+Full tool schemas (the exact JSON your model receives) are documented in [docs/tools.md](docs/tools.md).
 
 | Tool | Description | Key Options |
 |------|-------------|-------------|
