@@ -5,11 +5,11 @@ The best AI agents already use filesystems as memory. Now your agent can too.
 memoryfs gives your agent a persistent virtual filesystem backed by your own database. Agents use familiar file operations (`read`, `write`, `ls`, `grep`) while data lives in SQLite or Postgres.
 
 ```bash
-npm install memoryfs better-sqlite3
+npm install agent-vfs better-sqlite3
 ```
 
 ```ts
-import { FileSystem, openDatabase } from "memoryfs";
+import { FileSystem, openDatabase } from "agent-vfs";
 
 const db = await openDatabase("memory.db"); // SQLite, auto-creates table
 const fs = new FileSystem(db, "agent-1");
@@ -33,8 +33,8 @@ A real filesystem per user doesn't work well in production (isolation, backups, 
 ```ts
 import { generateText } from "ai";
 import { openai } from "@ai-sdk/openai";
-import { FileSystem, openDatabase } from "memoryfs";
-import { createTools } from "memoryfs/ai";
+import { FileSystem, openDatabase } from "agent-vfs";
+import { createTools } from "agent-vfs/ai";
 
 const db = await openDatabase("memory.db");
 const fs = new FileSystem(db, userId);
@@ -50,7 +50,7 @@ const { text } = await generateText({
 
 ```ts
 import OpenAI from "openai";
-import { FileSystem, openDatabase, openai } from "memoryfs";
+import { FileSystem, openDatabase, openai } from "agent-vfs";
 
 const db = await openDatabase("memory.db");
 const fs = new FileSystem(db, userId);
@@ -72,7 +72,7 @@ for (const call of response.choices[0].message.tool_calls ?? []) {
 
 ```ts
 import Anthropic from "@anthropic-ai/sdk";
-import { FileSystem, openDatabase, anthropic } from "memoryfs";
+import { FileSystem, openDatabase, anthropic } from "agent-vfs";
 
 const db = await openDatabase("memory.db");
 const fs = new FileSystem(db, userId);
@@ -96,7 +96,7 @@ for (const block of response.content) {
 ### Direct tool access
 
 ```ts
-import { tools, callTool, getTool } from "memoryfs";
+import { tools, callTool, getTool } from "agent-vfs";
 
 const readTool = getTool("read");
 await readTool.call(fs, { path: "/notes.md" }); // { text: "...", isError?: boolean }
@@ -142,7 +142,7 @@ In production you likely already have a Postgres database.
 
 ```ts
 // db/schema.ts - add to your existing Drizzle schema
-import { nodesTable } from "memoryfs/drizzle";
+import { nodesTable } from "agent-vfs/drizzle";
 export { nodesTable };
 ```
 
@@ -151,7 +151,7 @@ npx drizzle-kit generate && npx drizzle-kit migrate
 ```
 
 ```ts
-import { PostgresDatabase, FileSystem } from "memoryfs";
+import { PostgresDatabase, FileSystem } from "agent-vfs";
 const db = new PostgresDatabase(existingPool); // your existing pg.Pool
 const fs = new FileSystem(db, userId);
 ```
@@ -159,7 +159,7 @@ const fs = new FileSystem(db, userId);
 **Option B: Raw SQL**
 
 ```ts
-import { postgresSchema } from "memoryfs/schema";
+import { postgresSchema } from "agent-vfs/schema";
 // Add to your migration tool, or:
 const db = new PostgresDatabase(pool);
 await db.initialize(); // CREATE TABLE IF NOT EXISTS
@@ -168,7 +168,7 @@ await db.initialize(); // CREATE TABLE IF NOT EXISTS
 **Option C: Custom adapter**
 
 ```ts
-import type { Database } from "memoryfs";
+import type { Database } from "agent-vfs";
 
 class MyDatabase implements Database {
   async getNode(userId, path) { /* ... */ }
