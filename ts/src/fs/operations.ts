@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Database, NodeRow } from "../db/types.js";
+import type { SearchIndex } from "../search/index.js";
+import type { SearchResult, SearchOptions } from "../search/types.js";
 import { normalize, parentPath, baseName, allAncestors, globToLike } from "./paths.js";
 import {
   NotFoundError,
@@ -14,10 +16,13 @@ const DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 export interface FileSystemOptions {
   /** Maximum file size in bytes. Default: 10 MB. Set to Infinity to disable. */
   maxFileSize?: number;
+  /** Optional search index for hybrid FTS5 + vector search. */
+  searchIndex?: SearchIndex;
 }
 
 export class FileSystem {
   private maxFileSize: number;
+  private searchIdx?: SearchIndex;
 
   constructor(
     private db: Database,
@@ -25,6 +30,7 @@ export class FileSystem {
     options?: FileSystemOptions
   ) {
     this.maxFileSize = options?.maxFileSize ?? DEFAULT_MAX_FILE_SIZE;
+    this.searchIdx = options?.searchIndex;
   }
 
   async read(path: string, opts?: { offset?: number; limit?: number }): Promise<string> {
@@ -42,7 +48,7 @@ export class FileSystem {
     return content;
   }
 
-  async write(path: string, content: string): Promise<void> {
+  async write(path: string, content: string, opts?: { summary?: string }): Promise<void> {
     const norm = normalize(path);
     const size = Buffer.byteLength(content, "utf-8");
     if (size > this.maxFileSize) throw new FileSizeError(size, this.maxFileSize);
@@ -52,6 +58,7 @@ export class FileSystem {
     const existing = await this.db.getNode(this.userId, norm);
     if (existing && existing.is_dir) throw new IsDirectoryError(norm);
     const version = existing ? existing.version + 1 : 1;
+    const summary = opts?.summary ?? existing?.summary ?? null;
 
     await this.db.upsertNode({
       id: existing?.id ?? randomUUID(),
@@ -61,9 +68,14 @@ export class FileSystem {
       name: baseName(norm),
       is_dir: false,
       content,
+      summary,
       version,
       size,
     });
+
+    if (this.searchIdx) {
+      await this.searchIdx.index(norm, content, summary);
+    }
   }
 
   async edit(path: string, oldString: string, newString: string): Promise<void> {
@@ -97,6 +109,10 @@ export class FileSystem {
       newSize,
       node.version + 1
     );
+
+    if (this.searchIdx) {
+      await this.searchIdx.index(norm, newContent, node.summary);
+    }
   }
 
   async multiEdit(path: string, edits: Array<{ old_string: string; new_string: string }>): Promise<void> {
@@ -129,9 +145,16 @@ export class FileSystem {
       newSize,
       node.version + 1
     );
+
+    if (this.searchIdx) {
+      await this.searchIdx.index(norm, content, node.summary);
+    }
   }
 
-  async ls(path: string, opts?: { recursive?: boolean }): Promise<Array<{ path: string; name: string; isDir: boolean; size: number }>> {
+  async ls(
+    path: string,
+    opts?: { recursive?: boolean; summaries?: boolean }
+  ): Promise<Array<{ path: string; name: string; isDir: boolean; size: number; summary?: string | null }>> {
     const norm = normalize(path);
 
     // Root always exists
@@ -141,23 +164,25 @@ export class FileSystem {
       if (!node.is_dir) throw new NotDirectoryError(norm);
     }
 
+    let nodes: NodeRow[];
     if (opts?.recursive) {
-      const descendants = await this.db.listDescendants(this.userId, norm);
-      return descendants.map((c) => ({
+      nodes = await this.db.listDescendants(this.userId, norm);
+    } else {
+      nodes = await this.db.listChildren(this.userId, norm);
+    }
+
+    return nodes.map((c) => {
+      const entry: { path: string; name: string; isDir: boolean; size: number; summary?: string | null } = {
         path: c.path,
         name: c.name,
         isDir: c.is_dir,
         size: c.size,
-      }));
-    }
-
-    const children = await this.db.listChildren(this.userId, norm);
-    return children.map((c) => ({
-      path: c.path,
-      name: c.name,
-      isDir: c.is_dir,
-      size: c.size,
-    }));
+      };
+      if (opts?.summaries) {
+        entry.summary = c.summary;
+      }
+      return entry;
+    });
   }
 
   async mkdir(path: string): Promise<void> {
@@ -179,6 +204,10 @@ export class FileSystem {
       await this.db.deleteTree(this.userId, norm);
     } else {
       await this.db.deleteNode(this.userId, norm);
+    }
+
+    if (this.searchIdx) {
+      await this.searchIdx.remove(norm);
     }
   }
 
@@ -202,6 +231,10 @@ export class FileSystem {
       newSize,
       node.version + 1
     );
+
+    if (this.searchIdx) {
+      await this.searchIdx.index(norm, newContent, node.summary);
+    }
   }
 
   async grep(
@@ -300,6 +333,64 @@ export class FileSystem {
     }
   }
 
+  // ── Tags ──────────────────────────────────────────────────────────────
+
+  async tag(path: string, tag: string): Promise<void> {
+    const norm = normalize(path);
+    const node = await this.db.getNode(this.userId, norm);
+    if (!node) throw new NotFoundError(norm);
+    await this.db.addTag(this.userId, norm, tag);
+  }
+
+  async untag(path: string, tag: string): Promise<void> {
+    const norm = normalize(path);
+    await this.db.removeTag(this.userId, norm, tag);
+  }
+
+  async tags(path: string): Promise<string[]> {
+    const norm = normalize(path);
+    return this.db.getTagsForPath(this.userId, norm);
+  }
+
+  async findByTag(tag: string, path?: string): Promise<Array<{ path: string; name: string; isDir: boolean; size: number }>> {
+    const pathPrefix = path ? normalize(path) : undefined;
+    const nodes = await this.db.findByTag(this.userId, tag, pathPrefix);
+    return nodes.map((c) => ({
+      path: c.path,
+      name: c.name,
+      isDir: c.is_dir,
+      size: c.size,
+    }));
+  }
+
+  // ── Recent ────────────────────────────────────────────────────────────
+
+  async recent(opts?: { limit?: number; path?: string }): Promise<Array<{ path: string; name: string; size: number; updatedAt: string; summary?: string | null }>> {
+    const limit = opts?.limit ?? 20;
+    const pathPrefix = opts?.path ? normalize(opts.path) : undefined;
+    const nodes = await this.db.listRecent(this.userId, limit, pathPrefix);
+    return nodes.map((c) => ({
+      path: c.path,
+      name: c.name,
+      size: c.size,
+      updatedAt: c.updated_at,
+      summary: c.summary,
+    }));
+  }
+
+  // ── Search ────────────────────────────────────────────────────────────
+
+  async search(query: string, opts?: SearchOptions): Promise<SearchResult[]> {
+    if (!this.searchIdx) {
+      throw new Error(
+        "Search requires a SearchIndex. Pass a searchIndex in FileSystemOptions."
+      );
+    }
+    return this.searchIdx.search(query, opts);
+  }
+
+  // ── Private helpers ───────────────────────────────────────────────────
+
   private async ensureParents(path: string): Promise<void> {
     const ancestors = allAncestors(path);
     for (const anc of ancestors) {
@@ -324,6 +415,7 @@ export class FileSystem {
       name: baseName(path),
       is_dir: true,
       content: null,
+      summary: null,
       version: 1,
       size: 0,
     });

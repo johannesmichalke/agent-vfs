@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS ${t} (
   name        TEXT NOT NULL,
   is_dir      INTEGER DEFAULT 0,
   content     TEXT,
+  summary     TEXT,
   version     INTEGER DEFAULT 1,
   size        INTEGER DEFAULT 0,
   created_at  TEXT DEFAULT (datetime('now')),
@@ -34,6 +35,33 @@ CREATE TABLE IF NOT EXISTS ${t} (
 );
 CREATE INDEX IF NOT EXISTS idx_${t}_ls ON ${t}(user_id, parent_path);
 CREATE INDEX IF NOT EXISTS idx_${t}_name ON ${t}(user_id, name);
+CREATE INDEX IF NOT EXISTS idx_${t}_updated ON ${t}(user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS ${t}_tags (
+  user_id    TEXT NOT NULL,
+  path       TEXT NOT NULL,
+  tag        TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, path, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_${t}_tags_lookup ON ${t}_tags(user_id, tag);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS ${t}_fts USING fts5(
+  content,
+  summary,
+  user_id UNINDEXED,
+  path UNINDEXED,
+  tokenize='porter unicode61'
+);
+
+CREATE TABLE IF NOT EXISTS ${t}_chunks (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  node_path   TEXT NOT NULL,
+  chunk_index INTEGER NOT NULL,
+  content     TEXT NOT NULL,
+  UNIQUE(user_id, node_path, chunk_index)
+);
 `.trim();
 }
 
@@ -48,6 +76,7 @@ CREATE TABLE IF NOT EXISTS ${t} (
   name        TEXT NOT NULL,
   is_dir      BOOLEAN DEFAULT FALSE,
   content     TEXT,
+  summary     TEXT,
   version     INTEGER DEFAULT 1,
   size        INTEGER DEFAULT 0,
   created_at  TIMESTAMPTZ DEFAULT NOW(),
@@ -56,6 +85,16 @@ CREATE TABLE IF NOT EXISTS ${t} (
 );
 CREATE INDEX IF NOT EXISTS idx_${t}_ls ON ${t}(user_id, parent_path);
 CREATE INDEX IF NOT EXISTS idx_${t}_name ON ${t}(user_id, name);
+CREATE INDEX IF NOT EXISTS idx_${t}_updated ON ${t}(user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS ${t}_tags (
+  user_id    TEXT NOT NULL,
+  path       TEXT NOT NULL,
+  tag        TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (user_id, path, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_${t}_tags_lookup ON ${t}_tags(user_id, tag);
 `.trim();
 }
 

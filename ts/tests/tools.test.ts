@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { FileSystem } from "../src/fs/operations.js";
 import { SqliteDatabase } from "../src/db/sqlite.js";
+import { SearchIndex } from "../src/search/index.js";
 import { tools, callTool, getTool } from "../src/tools.js";
 
 let db: SqliteDatabase;
@@ -9,7 +10,8 @@ let fs: FileSystem;
 beforeEach(async () => {
   db = new SqliteDatabase(":memory:");
   await db.initialize();
-  fs = new FileSystem(db, "test-user");
+  const searchIdx = new SearchIndex(db, "test-user");
+  fs = new FileSystem(db, "test-user", { searchIndex: searchIdx });
 });
 
 afterEach(async () => {
@@ -17,8 +19,8 @@ afterEach(async () => {
 });
 
 describe("tools array", () => {
-  it("has 11 tools", () => {
-    expect(tools).toHaveLength(11);
+  it("has 16 tools", () => {
+    expect(tools).toHaveLength(16);
   });
 
   it("every tool has name, description, parameters, and call", () => {
@@ -130,5 +132,158 @@ describe("callTool", () => {
     const result = await callTool(fs, "read", { path: "/missing" });
     expect(result.isError).toBe(true);
     expect(result.text).toContain("No such file");
+  });
+});
+
+// ── New feature tests ─────────────────────────────────────────────────
+
+describe("write with summary", () => {
+  it("stores and retrieves summary via ls", async () => {
+    await callTool(fs, "write", {
+      path: "/notes.md",
+      content: "# Meeting Notes\nDiscussed architecture decisions.",
+      summary: "Architecture meeting notes",
+    });
+    const result = await callTool(fs, "ls", { path: "/", summaries: true });
+    expect(result.text).toContain("notes.md");
+    expect(result.text).toContain("Architecture meeting notes");
+  });
+
+  it("summary persists across edits", async () => {
+    await callTool(fs, "write", {
+      path: "/doc.md",
+      content: "version 1",
+      summary: "My document",
+    });
+    await callTool(fs, "edit", { path: "/doc.md", old_string: "version 1", new_string: "version 2" });
+    const result = await callTool(fs, "ls", { path: "/", summaries: true });
+    expect(result.text).toContain("My document");
+  });
+
+  it("ls without summaries flag does not show summaries", async () => {
+    await callTool(fs, "write", {
+      path: "/doc.md",
+      content: "hello",
+      summary: "A greeting",
+    });
+    const result = await callTool(fs, "ls", { path: "/" });
+    expect(result.text).not.toContain("A greeting");
+  });
+});
+
+describe("tag / untag / find_by_tag", () => {
+  it("tags a file and finds it", async () => {
+    await callTool(fs, "write", { path: "/prefs.md", content: "I like dark mode" });
+    const tagResult = await callTool(fs, "tag", { path: "/prefs.md", tag: "preferences" });
+    expect(tagResult.text).toContain("#preferences");
+
+    const findResult = await callTool(fs, "find_by_tag", { tag: "preferences" });
+    expect(findResult.text).toContain("/prefs.md");
+  });
+
+  it("untags a file", async () => {
+    await callTool(fs, "write", { path: "/file.md", content: "x" });
+    await callTool(fs, "tag", { path: "/file.md", tag: "temp" });
+    await callTool(fs, "untag", { path: "/file.md", tag: "temp" });
+
+    const findResult = await callTool(fs, "find_by_tag", { tag: "temp" });
+    expect(findResult.text).toContain("No files found");
+  });
+
+  it("find_by_tag scopes to path", async () => {
+    await callTool(fs, "write", { path: "/a/file.md", content: "a" });
+    await callTool(fs, "write", { path: "/b/file.md", content: "b" });
+    await callTool(fs, "tag", { path: "/a/file.md", tag: "important" });
+    await callTool(fs, "tag", { path: "/b/file.md", tag: "important" });
+
+    const result = await callTool(fs, "find_by_tag", { tag: "important", path: "/a" });
+    expect(result.text).toContain("/a/file.md");
+    expect(result.text).not.toContain("/b/file.md");
+  });
+
+  it("multiple tags on same file", async () => {
+    await callTool(fs, "write", { path: "/doc.md", content: "content" });
+    await callTool(fs, "tag", { path: "/doc.md", tag: "architecture" });
+    await callTool(fs, "tag", { path: "/doc.md", tag: "decisions" });
+
+    const tags = await fs.tags("/doc.md");
+    expect(tags).toContain("architecture");
+    expect(tags).toContain("decisions");
+  });
+});
+
+describe("recent", () => {
+  it("returns recently modified files", async () => {
+    await callTool(fs, "write", { path: "/old.txt", content: "old" });
+    await callTool(fs, "write", { path: "/new.txt", content: "new" });
+
+    const result = await callTool(fs, "recent", { limit: 10 });
+    expect(result.text).toContain("/new.txt");
+    expect(result.text).toContain("/old.txt");
+  });
+
+  it("respects limit", async () => {
+    for (let i = 0; i < 5; i++) {
+      await callTool(fs, "write", { path: `/file${i}.txt`, content: `content ${i}` });
+    }
+    const result = await callTool(fs, "recent", { limit: 2 });
+    const lines = result.text.split("\n").filter(l => l.startsWith("/"));
+    expect(lines.length).toBe(2);
+  });
+
+  it("shows summaries", async () => {
+    await callTool(fs, "write", {
+      path: "/noted.md",
+      content: "stuff",
+      summary: "Important notes",
+    });
+    const result = await callTool(fs, "recent", {});
+    expect(result.text).toContain("Important notes");
+  });
+});
+
+describe("search (FTS5)", () => {
+  it("finds files by keyword", async () => {
+    await callTool(fs, "write", {
+      path: "/architecture.md",
+      content: "The system uses a microservices architecture with event-driven communication.",
+    });
+    await callTool(fs, "write", {
+      path: "/readme.md",
+      content: "This is a simple hello world project.",
+    });
+
+    const result = await callTool(fs, "search", { query: "microservices architecture" });
+    expect(result.text).toContain("/architecture.md");
+  });
+
+  it("ranks results by relevance", async () => {
+    await callTool(fs, "write", {
+      path: "/relevant.md",
+      content: "Database migration strategy for PostgreSQL. Database indexing and query optimization.",
+    });
+    await callTool(fs, "write", {
+      path: "/less-relevant.md",
+      content: "The weather is nice today. Also, we have a database.",
+    });
+
+    const result = await callTool(fs, "search", { query: "database" });
+    // The file with more occurrences should rank higher
+    expect(result.text).toContain("/relevant.md");
+  });
+
+  it("scopes to path prefix", async () => {
+    await callTool(fs, "write", { path: "/docs/guide.md", content: "deployment guide for kubernetes" });
+    await callTool(fs, "write", { path: "/notes/deploy.md", content: "deployment notes" });
+
+    const result = await callTool(fs, "search", { query: "deployment", path: "/docs" });
+    expect(result.text).toContain("/docs/guide.md");
+    expect(result.text).not.toContain("/notes/deploy.md");
+  });
+
+  it("returns no results for unmatched query", async () => {
+    await callTool(fs, "write", { path: "/file.md", content: "hello world" });
+    const result = await callTool(fs, "search", { query: "xyznonexistent" });
+    expect(result.text).toContain("No results found");
   });
 });

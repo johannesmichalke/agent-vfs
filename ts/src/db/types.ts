@@ -6,6 +6,7 @@ export interface NodeRow {
   name: string;
   is_dir: boolean;
   content: string | null;
+  summary: string | null;
   version: number;
   size: number;
   created_at: string;
@@ -25,6 +26,7 @@ export interface Database {
     size: number,
     version: number
   ): Promise<void>;
+  updateSummary(userId: string, path: string, summary: string | null): Promise<void>;
   deleteNode(userId: string, path: string): Promise<void>;
   deleteTree(userId: string, pathPrefix: string): Promise<void>;
   moveNode(
@@ -45,5 +47,15 @@ export interface Database {
     likePattern: string,
     pathPrefix?: string
   ): Promise<NodeRow[]>;
+
+  // Tags
+  addTag(userId: string, path: string, tag: string): Promise<void>;
+  removeTag(userId: string, path: string, tag: string): Promise<void>;
+  getTagsForPath(userId: string, path: string): Promise<string[]>;
+  findByTag(userId: string, tag: string, pathPrefix?: string): Promise<NodeRow[]>;
+
+  // Recent
+  listRecent(userId: string, limit?: number, pathPrefix?: string): Promise<NodeRow[]>;
+
   close(): Promise<void>;
 }
