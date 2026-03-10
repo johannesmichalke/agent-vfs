@@ -1,6 +1,6 @@
 # Tool Reference
 
-agent-vfs exposes 11 tools. These are the exact schemas your model receives when you use `createTools(fs)`, `openai(fs)`, or `anthropic(fs)`.
+agent-vfs exposes 16 tools. These are the exact schemas your model receives when you use `createTools(fs)`, `openai(fs)`, or `anthropic(fs)`.
 
 You can also inspect them at runtime:
 
@@ -30,7 +30,7 @@ Read a file's content. Use offset/limit to read specific line ranges.
 
 ## write
 
-Write content to a file (creates parent directories automatically).
+Write content to a file (creates parent directories automatically). Optionally include a short summary for indexing.
 
 ```json
 {
@@ -39,7 +39,8 @@ Write content to a file (creates parent directories automatically).
     "type": "object",
     "properties": {
       "path": { "type": "string", "description": "Absolute path to the file" },
-      "content": { "type": "string", "description": "Content to write" }
+      "content": { "type": "string", "description": "Content to write" },
+      "summary": { "type": "string", "description": "Optional 1-2 sentence summary of the file's content (used for search and ls)" }
     },
     "required": ["path", "content"]
   }
@@ -114,7 +115,7 @@ Append content to the end of a file (creates file if it doesn't exist).
 
 ## ls
 
-List directory contents. Use recursive to see full tree.
+List directory contents. Use recursive to see full tree. Use summaries to show file descriptions.
 
 ```json
 {
@@ -123,7 +124,8 @@ List directory contents. Use recursive to see full tree.
     "type": "object",
     "properties": {
       "path": { "type": "string", "description": "Absolute path to the directory" },
-      "recursive": { "type": "boolean", "description": "List all files and directories recursively" }
+      "recursive": { "type": "boolean", "description": "List all files and directories recursively" },
+      "summaries": { "type": "boolean", "description": "Show file summaries alongside names" }
     },
     "required": ["path"]
   }
@@ -216,6 +218,96 @@ Move or rename a file or directory.
       "to": { "type": "string", "description": "Destination path" }
     },
     "required": ["from", "to"]
+  }
+}
+```
+
+## search
+
+Semantic search across all files using full-text search (BM25) and optional vector embeddings. Returns ranked results with snippets.
+
+```json
+{
+  "name": "search",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": { "type": "string", "description": "Natural language search query" },
+      "path": { "type": "string", "description": "Restrict search to files under this path" },
+      "limit": { "type": "number", "description": "Maximum results to return (default: 20)" }
+    },
+    "required": ["query"]
+  }
+}
+```
+
+## tag
+
+Add a tag to a file or directory for categorization and retrieval.
+
+```json
+{
+  "name": "tag",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": { "type": "string", "description": "Absolute path to tag" },
+      "tag": { "type": "string", "description": "Tag name (e.g. 'preferences', 'architecture', 'decision')" }
+    },
+    "required": ["path", "tag"]
+  }
+}
+```
+
+## untag
+
+Remove a tag from a file or directory.
+
+```json
+{
+  "name": "untag",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": { "type": "string", "description": "Absolute path to untag" },
+      "tag": { "type": "string", "description": "Tag to remove" }
+    },
+    "required": ["path", "tag"]
+  }
+}
+```
+
+## find_by_tag
+
+Find all files and directories with a specific tag.
+
+```json
+{
+  "name": "find_by_tag",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "tag": { "type": "string", "description": "Tag to search for" },
+      "path": { "type": "string", "description": "Restrict to files under this path" }
+    },
+    "required": ["tag"]
+  }
+}
+```
+
+## recent
+
+List recently modified files, ordered by last update time.
+
+```json
+{
+  "name": "recent",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "limit": { "type": "number", "description": "Maximum number of files to return (default: 20)" },
+      "path": { "type": "string", "description": "Restrict to files under this path" }
+    }
   }
 }
 ```

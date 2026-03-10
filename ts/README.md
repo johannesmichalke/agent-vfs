@@ -89,23 +89,51 @@ for (const block of response.content) {
 }
 ```
 
-## Tools (11)
+## Tools (16)
 
 Full tool schemas: [docs/tools.md](docs/tools.md)
 
 | Tool | Description | Key Options |
 |------|-------------|-------------|
 | `read` | Read a file | `offset`, `limit` (line range) |
-| `write` | Write a file (auto-creates parent dirs) | |
+| `write` | Write a file (auto-creates parent dirs) | `summary` (optional description for search/ls) |
 | `edit` | Find-and-replace (unique match required) | |
 | `multi_edit` | Multiple find-and-replace edits in one call | |
 | `append` | Append to a file (creates if missing) | |
-| `ls` | List directory | `recursive` |
+| `ls` | List directory | `recursive`, `summaries` |
 | `mkdir` | Create directory (idempotent, creates parents) | |
 | `rm` | Remove file or directory (recursive) | |
 | `grep` | Search file contents (regex) | `case_insensitive` |
 | `glob` | Find files by name (glob pattern) | `type` (file/dir) |
 | `mv` | Move or rename (overwrites target) | |
+| `search` | Semantic search across all files (FTS5 + optional vectors) | `path`, `limit` |
+| `tag` | Add a tag to a file or directory | |
+| `untag` | Remove a tag from a file or directory | |
+| `find_by_tag` | Find all files with a specific tag | `path` (scope) |
+| `recent` | List recently modified files | `limit`, `path` (scope) |
+
+## Search
+
+Built-in full-text search (FTS5) with optional vector embeddings for hybrid semantic search.
+
+```ts
+import { FileSystem, openDatabase, openSearch } from "agent-vfs";
+
+const db = await openDatabase("memory.db");
+
+// FTS5 only (zero dependencies):
+const search = openSearch(db, userId);
+
+// Hybrid FTS5 + vector (just add an API key):
+const search = openSearch(db, userId, "openai", process.env.OPENAI_API_KEY);
+
+const fs = new FileSystem(db, userId, { searchIndex: search });
+
+await fs.write("/notes.md", "Architecture decisions", { summary: "Key design choices" });
+const results = await fs.search("architecture");
+```
+
+Supported embedding providers: `openai`, `openai-large`, `voyage`, `voyage-large`, `mistral`. Or pass a custom `url`, `model`, `apiKey`, and `dimensions` to `openEmbeddings()`.
 
 ## Multi-tenancy
 
