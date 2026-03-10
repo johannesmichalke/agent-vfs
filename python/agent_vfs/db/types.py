@@ -11,6 +11,7 @@ class NodeRow(TypedDict):
     name: str
     is_dir: bool
     content: str | None
+    summary: str | None
     version: int
     size: int
     created_at: str
@@ -30,6 +31,9 @@ class Database(Protocol):
         content: str,
         size: int,
         version: int,
+    ) -> None: ...
+    def update_summary(
+        self, user_id: str, path: str, summary: str | None
     ) -> None: ...
     def delete_node(self, user_id: str, path: str) -> None: ...
     def delete_tree(self, user_id: str, path_prefix: str) -> None: ...
@@ -56,4 +60,18 @@ class Database(Protocol):
         like_pattern: str,
         path_prefix: str | None = None,
     ) -> list[NodeRow]: ...
+
+    # Tags
+    def add_tag(self, user_id: str, path: str, tag: str) -> None: ...
+    def remove_tag(self, user_id: str, path: str, tag: str) -> None: ...
+    def get_tags_for_path(self, user_id: str, path: str) -> list[str]: ...
+    def find_by_tag(
+        self, user_id: str, tag: str, path_prefix: str | None = None
+    ) -> list[NodeRow]: ...
+
+    # Recent
+    def list_recent(
+        self, user_id: str, limit: int = 20, path_prefix: str | None = None
+    ) -> list[NodeRow]: ...
+
     def close(self) -> None: ...

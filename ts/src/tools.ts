@@ -49,18 +49,21 @@ export const tools: Tool[] = [
   },
   {
     name: "write",
-    description: "Write content to a file (creates parent directories automatically)",
+    description: "Write content to a file (creates parent directories automatically). Optionally include a short summary for indexing.",
     parameters: {
       type: "object",
       properties: {
         path: { type: "string", description: "Absolute path to the file" },
         content: { type: "string", description: "Content to write" },
+        summary: { type: "string", description: "Optional 1-2 sentence summary of the file's content (used for search and ls)" },
       },
       required: ["path", "content"],
     },
     async call(fs, args) {
       try {
-        await fs.write(args.path as string, args.content as string);
+        await fs.write(args.path as string, args.content as string, {
+          summary: args.summary as string | undefined,
+        });
         return ok(`Wrote ${Buffer.byteLength(args.content as string)} bytes to ${args.path}`);
       } catch (e) { return err(e); }
     },
@@ -133,23 +136,38 @@ export const tools: Tool[] = [
   },
   {
     name: "ls",
-    description: "List directory contents. Use recursive to see full tree.",
+    description: "List directory contents. Use recursive to see full tree. Use summaries to show file descriptions.",
     parameters: {
       type: "object",
       properties: {
         path: { type: "string", description: "Absolute path to the directory" },
         recursive: { type: "boolean", description: "List all files and directories recursively" },
+        summaries: { type: "boolean", description: "Show file summaries alongside names" },
       },
       required: ["path"],
     },
     async call(fs, args) {
       try {
-        const entries = await fs.ls(args.path as string, { recursive: args.recursive as boolean | undefined });
+        const entries = await fs.ls(args.path as string, {
+          recursive: args.recursive as boolean | undefined,
+          summaries: args.summaries as boolean | undefined,
+        });
         if (entries.length === 0) return ok("(empty directory)");
+
+        const showSummaries = args.summaries as boolean | undefined;
+
         if (args.recursive) {
-          return ok(entries.map(e => e.isDir ? `${e.path}/` : `${e.path}  (${e.size} bytes)`).join("\n"));
+          return ok(entries.map(e => {
+            let line = e.isDir ? `${e.path}/` : `${e.path}  (${e.size} bytes)`;
+            if (showSummaries && e.summary) line += `  — ${e.summary}`;
+            return line;
+          }).join("\n"));
         }
-        return ok(entries.map(e => e.isDir ? `${e.name}/` : `${e.name}  (${e.size} bytes)`).join("\n"));
+        return ok(entries.map(e => {
+          let line = e.isDir ? `${e.name}/` : `${e.name}  (${e.size} bytes)`;
+          if (showSummaries && e.summary) line += `  — ${e.summary}`;
+          return line;
+        }).join("\n"));
       } catch (e) { return err(e); }
     },
   },
@@ -252,6 +270,119 @@ export const tools: Tool[] = [
       try {
         await fs.mv(args.from as string, args.to as string);
         return ok(`Moved ${args.from} -> ${args.to}`);
+      } catch (e) { return err(e); }
+    },
+  },
+
+  // ── New tools ─────────────────────────────────────────────────────────
+
+  {
+    name: "search",
+    description: "Semantic search across all files using full-text search (BM25) and optional vector embeddings. Returns ranked results with snippets.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Natural language search query" },
+        path: { type: "string", description: "Restrict search to files under this path" },
+        limit: { type: "number", description: "Maximum results to return (default: 20)" },
+      },
+      required: ["query"],
+    },
+    async call(fs, args) {
+      try {
+        const results = await fs.search(args.query as string, {
+          path: args.path as string | undefined,
+          limit: args.limit as number | undefined,
+        });
+        if (results.length === 0) return ok("No results found");
+        return ok(results.map((r, i) =>
+          `${i + 1}. ${r.path} [${r.source}] (score: ${r.score.toFixed(3)})\n   ${r.snippet}`
+        ).join("\n\n"));
+      } catch (e) { return err(e); }
+    },
+  },
+  {
+    name: "tag",
+    description: "Add a tag to a file or directory for categorization and retrieval",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Absolute path to tag" },
+        tag: { type: "string", description: "Tag name (e.g. 'preferences', 'architecture', 'decision')" },
+      },
+      required: ["path", "tag"],
+    },
+    async call(fs, args) {
+      try {
+        await fs.tag(args.path as string, args.tag as string);
+        return ok(`Tagged ${args.path} with #${args.tag}`);
+      } catch (e) { return err(e); }
+    },
+  },
+  {
+    name: "untag",
+    description: "Remove a tag from a file or directory",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Absolute path to untag" },
+        tag: { type: "string", description: "Tag to remove" },
+      },
+      required: ["path", "tag"],
+    },
+    async call(fs, args) {
+      try {
+        await fs.untag(args.path as string, args.tag as string);
+        return ok(`Removed #${args.tag} from ${args.path}`);
+      } catch (e) { return err(e); }
+    },
+  },
+  {
+    name: "find_by_tag",
+    description: "Find all files and directories with a specific tag",
+    parameters: {
+      type: "object",
+      properties: {
+        tag: { type: "string", description: "Tag to search for" },
+        path: { type: "string", description: "Restrict to files under this path" },
+      },
+      required: ["tag"],
+    },
+    async call(fs, args) {
+      try {
+        const entries = await fs.findByTag(
+          args.tag as string,
+          args.path as string | undefined
+        );
+        if (entries.length === 0) return ok(`No files found with #${args.tag}`);
+        return ok(entries.map(e =>
+          e.isDir ? `${e.path}/` : `${e.path}  (${e.size} bytes)`
+        ).join("\n"));
+      } catch (e) { return err(e); }
+    },
+  },
+  {
+    name: "recent",
+    description: "List recently modified files, ordered by last update time",
+    parameters: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Maximum number of files to return (default: 20)" },
+        path: { type: "string", description: "Restrict to files under this path" },
+      },
+    },
+    async call(fs, args) {
+      try {
+        const entries = await fs.recent({
+          limit: args.limit as number | undefined,
+          path: args.path as string | undefined,
+        });
+        if (entries.length === 0) return ok("No recent files");
+        return ok(entries.map(e => {
+          let line = `${e.path}  (${e.size} bytes)  [${e.updatedAt}]`;
+          if (e.summary) line += `\n  ${e.summary}`;
+          return line;
+        }).join("\n"));
       } catch (e) { return err(e); }
     },
   },

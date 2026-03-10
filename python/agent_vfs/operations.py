@@ -23,10 +23,12 @@ class FileSystem:
         user_id: str,
         *,
         max_file_size: int = DEFAULT_MAX_FILE_SIZE,
+        search_index=None,
     ):
         self._db = db
         self._user_id = user_id
         self._max_file_size = max_file_size
+        self._search_idx = search_index
 
     def read(
         self, path: str, *, offset: int | None = None, limit: int | None = None
@@ -45,7 +47,7 @@ class FileSystem:
             return "\n".join(lines[max(0, start) : start + count])
         return content
 
-    def write(self, path: str, content: str) -> None:
+    def write(self, path: str, content: str, *, summary: str | None = None) -> None:
         norm = normalize(path)
         size = len(content.encode("utf-8"))
         if size > self._max_file_size:
@@ -57,6 +59,7 @@ class FileSystem:
         if existing and existing["is_dir"]:
             raise IsDirectoryError(norm)
         version = existing["version"] + 1 if existing else 1
+        resolved_summary = summary if summary is not None else (existing["summary"] if existing else None)
 
         self._db.upsert_node(
             NodeRow(
@@ -67,12 +70,16 @@ class FileSystem:
                 name=base_name(norm),
                 is_dir=False,
                 content=content,
+                summary=resolved_summary,
                 version=version,
                 size=size,
                 created_at="",
                 updated_at="",
             )
         )
+
+        if self._search_idx:
+            self._search_idx.index(norm, content, resolved_summary)
 
     def edit(self, path: str, old_string: str, new_string: str) -> None:
         norm = normalize(path)
@@ -100,6 +107,9 @@ class FileSystem:
         self._db.update_content(
             self._user_id, norm, new_content, new_size, node["version"] + 1
         )
+
+        if self._search_idx:
+            self._search_idx.index(norm, new_content, node["summary"])
 
     def multi_edit(
         self, path: str, edits: list[dict[str, str]]
@@ -135,8 +145,11 @@ class FileSystem:
             self._user_id, norm, content, new_size, node["version"] + 1
         )
 
+        if self._search_idx:
+            self._search_idx.index(norm, content, node["summary"])
+
     def ls(
-        self, path: str, *, recursive: bool = False
+        self, path: str, *, recursive: bool = False, summaries: bool = False
     ) -> list[dict]:
         norm = normalize(path)
 
@@ -148,17 +161,22 @@ class FileSystem:
                 raise NotDirectoryError(norm)
 
         if recursive:
-            descendants = self._db.list_descendants(self._user_id, norm)
-            return [
-                {"path": c["path"], "name": c["name"], "is_dir": c["is_dir"], "size": c["size"]}
-                for c in descendants
-            ]
+            nodes = self._db.list_descendants(self._user_id, norm)
+        else:
+            nodes = self._db.list_children(self._user_id, norm)
 
-        children = self._db.list_children(self._user_id, norm)
-        return [
-            {"path": c["path"], "name": c["name"], "is_dir": c["is_dir"], "size": c["size"]}
-            for c in children
-        ]
+        result = []
+        for c in nodes:
+            entry: dict = {
+                "path": c["path"],
+                "name": c["name"],
+                "is_dir": c["is_dir"],
+                "size": c["size"],
+            }
+            if summaries:
+                entry["summary"] = c["summary"]
+            result.append(entry)
+        return result
 
     def mkdir(self, path: str) -> None:
         norm = normalize(path)
@@ -180,6 +198,9 @@ class FileSystem:
         else:
             self._db.delete_node(self._user_id, norm)
 
+        if self._search_idx:
+            self._search_idx.remove(norm)
+
     def append(self, path: str, content: str) -> None:
         norm = normalize(path)
         node = self._db.get_node(self._user_id, norm)
@@ -196,6 +217,9 @@ class FileSystem:
         self._db.update_content(
             self._user_id, norm, new_content, new_size, node["version"] + 1
         )
+
+        if self._search_idx:
+            self._search_idx.index(norm, new_content, node["summary"])
 
     def grep(
         self,
@@ -276,6 +300,58 @@ class FileSystem:
         if source_node["is_dir"]:
             self._db.move_tree(self._user_id, norm_from, final_to)
 
+    # ── Tags ──────────────────────────────────────────────────────────────
+
+    def tag(self, path: str, tag: str) -> None:
+        norm = normalize(path)
+        node = self._db.get_node(self._user_id, norm)
+        if not node:
+            raise NotFoundError(norm)
+        self._db.add_tag(self._user_id, norm, tag)
+
+    def untag(self, path: str, tag: str) -> None:
+        norm = normalize(path)
+        self._db.remove_tag(self._user_id, norm, tag)
+
+    def tags(self, path: str) -> list[str]:
+        norm = normalize(path)
+        return self._db.get_tags_for_path(self._user_id, norm)
+
+    def find_by_tag(self, tag: str, path: str | None = None) -> list[dict]:
+        path_prefix = normalize(path) if path else None
+        nodes = self._db.find_by_tag(self._user_id, tag, path_prefix)
+        return [
+            {"path": c["path"], "name": c["name"], "is_dir": c["is_dir"], "size": c["size"]}
+            for c in nodes
+        ]
+
+    # ── Recent ────────────────────────────────────────────────────────────
+
+    def recent(self, *, limit: int = 20, path: str | None = None) -> list[dict]:
+        path_prefix = normalize(path) if path else None
+        nodes = self._db.list_recent(self._user_id, limit, path_prefix)
+        return [
+            {
+                "path": c["path"],
+                "name": c["name"],
+                "size": c["size"],
+                "updated_at": c["updated_at"],
+                "summary": c["summary"],
+            }
+            for c in nodes
+        ]
+
+    # ── Search ────────────────────────────────────────────────────────────
+
+    def search(self, query: str, **kwargs) -> list[dict]:
+        if not self._search_idx:
+            raise RuntimeError(
+                "Search requires a SearchIndex. Pass search_index= in FileSystem constructor."
+            )
+        return self._search_idx.search(query, **kwargs)
+
+    # ── Private helpers ───────────────────────────────────────────────────
+
     def _ensure_parents(self, path: str) -> None:
         for anc in all_ancestors(path):
             self._ensure_dir(anc)
@@ -297,6 +373,7 @@ class FileSystem:
                 name=base_name(path),
                 is_dir=True,
                 content=None,
+                summary=None,
                 version=1,
                 size=0,
                 created_at="",

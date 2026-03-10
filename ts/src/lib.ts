@@ -11,6 +11,12 @@ export type { Tool, ToolResult, ToolName } from "./tools.js";
 // SDK adapters
 export { openai, anthropic } from "./adapters.js";
 
+// Search
+export { SearchIndex, openSearch } from "./search/index.js";
+export { splitIntoChunks } from "./search/chunker.js";
+export { openEmbeddings } from "./search/embeddings.js";
+export type { EmbeddingProvider, SearchResult, SearchOptions } from "./search/types.js";
+
 // Database implementations (bring-your-own-client)
 export { SqliteDatabase } from "./db/sqlite.js";
 export { PostgresDatabase } from "./db/postgres.js";

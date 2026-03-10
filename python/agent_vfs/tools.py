@@ -29,12 +29,13 @@ TOOLS = [
     },
     {
         "name": "write",
-        "description": "Write content to a file (creates parent directories automatically)",
+        "description": "Write content to a file (creates parent directories automatically). Optionally include a short summary for indexing.",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Absolute path to the file"},
                 "content": {"type": "string", "description": "Content to write"},
+                "summary": {"type": "string", "description": "Optional 1-2 sentence summary of the file's content (used for search and ls)"},
             },
             "required": ["path", "content"],
         },
@@ -89,12 +90,13 @@ TOOLS = [
     },
     {
         "name": "ls",
-        "description": "List directory contents. Use recursive to see full tree.",
+        "description": "List directory contents. Use recursive to see full tree. Use summaries to show file descriptions.",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Absolute path to the directory"},
                 "recursive": {"type": "boolean", "description": "List all files and directories recursively"},
+                "summaries": {"type": "boolean", "description": "Show file summaries alongside names"},
             },
             "required": ["path"],
         },
@@ -159,6 +161,67 @@ TOOLS = [
             "required": ["from", "to"],
         },
     },
+    # ── New tools ─────────────────────────────────────────────────────────
+    {
+        "name": "search",
+        "description": "Semantic search across all files using full-text search (BM25) and optional vector embeddings. Returns ranked results with snippets.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Natural language search query"},
+                "path": {"type": "string", "description": "Restrict search to files under this path"},
+                "limit": {"type": "number", "description": "Maximum results to return (default: 20)"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "tag",
+        "description": "Add a tag to a file or directory for categorization and retrieval",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Absolute path to tag"},
+                "tag": {"type": "string", "description": "Tag name (e.g. 'preferences', 'architecture', 'decision')"},
+            },
+            "required": ["path", "tag"],
+        },
+    },
+    {
+        "name": "untag",
+        "description": "Remove a tag from a file or directory",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Absolute path to untag"},
+                "tag": {"type": "string", "description": "Tag to remove"},
+            },
+            "required": ["path", "tag"],
+        },
+    },
+    {
+        "name": "find_by_tag",
+        "description": "Find all files and directories with a specific tag",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tag": {"type": "string", "description": "Tag to search for"},
+                "path": {"type": "string", "description": "Restrict to files under this path"},
+            },
+            "required": ["tag"],
+        },
+    },
+    {
+        "name": "recent",
+        "description": "List recently modified files, ordered by last update time",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "number", "description": "Maximum number of files to return (default: 20)"},
+                "path": {"type": "string", "description": "Restrict to files under this path"},
+            },
+        },
+    },
 ]
 
 
@@ -176,7 +239,7 @@ def _call_read(fs: FileSystem, args: dict) -> dict:
 
 def _call_write(fs: FileSystem, args: dict) -> dict:
     try:
-        fs.write(args["path"], args["content"])
+        fs.write(args["path"], args["content"], summary=args.get("summary"))
         size = len(args["content"].encode("utf-8"))
         return _ok(f"Wrote {size} bytes to {args['path']}")
     except Exception as e:
@@ -210,19 +273,28 @@ def _call_append(fs: FileSystem, args: dict) -> dict:
 
 def _call_ls(fs: FileSystem, args: dict) -> dict:
     try:
-        entries = fs.ls(args["path"], recursive=args.get("recursive", False))
+        entries = fs.ls(
+            args["path"],
+            recursive=args.get("recursive", False),
+            summaries=args.get("summaries", False),
+        )
         if not entries:
             return _ok("(empty directory)")
+        show_summaries = args.get("summaries", False)
         if args.get("recursive"):
-            lines = [
-                f"{e['path']}/" if e["is_dir"] else f"{e['path']}  ({e['size']} bytes)"
-                for e in entries
-            ]
+            lines = []
+            for e in entries:
+                line = f"{e['path']}/" if e["is_dir"] else f"{e['path']}  ({e['size']} bytes)"
+                if show_summaries and e.get("summary"):
+                    line += f"  — {e['summary']}"
+                lines.append(line)
         else:
-            lines = [
-                f"{e['name']}/" if e["is_dir"] else f"{e['name']}  ({e['size']} bytes)"
-                for e in entries
-            ]
+            lines = []
+            for e in entries:
+                line = f"{e['name']}/" if e["is_dir"] else f"{e['name']}  ({e['size']} bytes)"
+                if show_summaries and e.get("summary"):
+                    line += f"  — {e['summary']}"
+                lines.append(line)
         return _ok("\n".join(lines))
     except Exception as e:
         return _err(e)
@@ -280,6 +352,77 @@ def _call_mv(fs: FileSystem, args: dict) -> dict:
         return _err(e)
 
 
+def _call_search(fs: FileSystem, args: dict) -> dict:
+    try:
+        kwargs: dict = {}
+        if "path" in args:
+            kwargs["path"] = args["path"]
+        if "limit" in args:
+            kwargs["limit"] = int(args["limit"])
+        results = fs.search(args["query"], **kwargs)
+        if not results:
+            return _ok("No results found")
+        lines = []
+        for i, r in enumerate(results):
+            lines.append(
+                f"{i + 1}. {r['path']} [{r['source']}] (score: {r['score']:.3f})\n   {r['snippet']}"
+            )
+        return _ok("\n\n".join(lines))
+    except Exception as e:
+        return _err(e)
+
+
+def _call_tag(fs: FileSystem, args: dict) -> dict:
+    try:
+        fs.tag(args["path"], args["tag"])
+        return _ok(f"Tagged {args['path']} with #{args['tag']}")
+    except Exception as e:
+        return _err(e)
+
+
+def _call_untag(fs: FileSystem, args: dict) -> dict:
+    try:
+        fs.untag(args["path"], args["tag"])
+        return _ok(f"Removed #{args['tag']} from {args['path']}")
+    except Exception as e:
+        return _err(e)
+
+
+def _call_find_by_tag(fs: FileSystem, args: dict) -> dict:
+    try:
+        entries = fs.find_by_tag(args["tag"], args.get("path"))
+        if not entries:
+            return _ok(f"No files found with #{args['tag']}")
+        lines = [
+            f"{e['path']}/" if e["is_dir"] else f"{e['path']}  ({e['size']} bytes)"
+            for e in entries
+        ]
+        return _ok("\n".join(lines))
+    except Exception as e:
+        return _err(e)
+
+
+def _call_recent(fs: FileSystem, args: dict) -> dict:
+    try:
+        kwargs: dict = {}
+        if "limit" in args and args["limit"] is not None:
+            kwargs["limit"] = int(args["limit"])
+        if "path" in args and args["path"] is not None:
+            kwargs["path"] = args["path"]
+        entries = fs.recent(**kwargs)
+        if not entries:
+            return _ok("No recent files")
+        lines = []
+        for e in entries:
+            line = f"{e['path']}  ({e['size']} bytes)  [{e['updated_at']}]"
+            if e.get("summary"):
+                line += f"\n  {e['summary']}"
+            lines.append(line)
+        return _ok("\n".join(lines))
+    except Exception as e:
+        return _err(e)
+
+
 _HANDLERS = {
     "read": _call_read,
     "write": _call_write,
@@ -292,6 +435,11 @@ _HANDLERS = {
     "grep": _call_grep,
     "glob": _call_glob,
     "mv": _call_mv,
+    "search": _call_search,
+    "tag": _call_tag,
+    "untag": _call_untag,
+    "find_by_tag": _call_find_by_tag,
+    "recent": _call_recent,
 }
 
 tools = TOOLS

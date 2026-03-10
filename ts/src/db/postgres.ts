@@ -22,6 +22,7 @@ function rowToNode(row: Record<string, unknown>): NodeRow {
     name: row.name as string,
     is_dir: !!row.is_dir,
     content: (row.content as string) ?? null,
+    summary: (row.summary as string) ?? null,
     version: Number(row.version),
     size: Number(row.size),
     created_at: String(row.created_at),
@@ -92,14 +93,15 @@ export class PostgresDatabase implements Database {
 
   async upsertNode(node: Omit<NodeRow, "created_at" | "updated_at">): Promise<void> {
     await this.client.query(
-      `INSERT INTO ${this.table} (id, user_id, path, parent_path, name, is_dir, content, version, size)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO ${this.table} (id, user_id, path, parent_path, name, is_dir, content, summary, version, size)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT(user_id, path) DO UPDATE SET
          content = EXCLUDED.content,
+         summary = EXCLUDED.summary,
          version = EXCLUDED.version,
          size = EXCLUDED.size,
          updated_at = NOW()`,
-      [node.id, node.user_id, node.path, node.parent_path, node.name, node.is_dir, node.content, node.version, node.size]
+      [node.id, node.user_id, node.path, node.parent_path, node.name, node.is_dir, node.content, node.summary, node.version, node.size]
     );
   }
 
@@ -114,9 +116,21 @@ export class PostgresDatabase implements Database {
     }
   }
 
+  async updateSummary(userId: string, path: string, summary: string | null): Promise<void> {
+    await this.client.query(
+      `UPDATE ${this.table} SET summary = $1, updated_at = NOW()
+       WHERE user_id = $2 AND path = $3`,
+      [summary, userId, path]
+    );
+  }
+
   async deleteNode(userId: string, path: string): Promise<void> {
     await this.client.query(
       `DELETE FROM ${this.table} WHERE user_id = $1 AND path = $2`,
+      [userId, path]
+    );
+    await this.client.query(
+      `DELETE FROM ${this.table}_tags WHERE user_id = $1 AND path = $2`,
       [userId, path]
     );
   }
@@ -124,6 +138,10 @@ export class PostgresDatabase implements Database {
   async deleteTree(userId: string, pathPrefix: string): Promise<void> {
     await this.client.query(
       `DELETE FROM ${this.table} WHERE user_id = $1 AND (path = $2 OR path LIKE $3)`,
+      [userId, pathPrefix, pathPrefix + "/%"]
+    );
+    await this.client.query(
+      `DELETE FROM ${this.table}_tags WHERE user_id = $1 AND (path = $2 OR path LIKE $3)`,
       [userId, pathPrefix, pathPrefix + "/%"]
     );
   }
@@ -134,6 +152,10 @@ export class PostgresDatabase implements Database {
        WHERE user_id = $4 AND path = $5`,
       [newPath, newParent, newName, userId, oldPath]
     );
+    await this.client.query(
+      `UPDATE ${this.table}_tags SET path = $1 WHERE user_id = $2 AND path = $3`,
+      [newPath, userId, oldPath]
+    );
   }
 
   async moveTree(userId: string, oldPrefix: string, newPrefix: string): Promise<void> {
@@ -142,6 +164,12 @@ export class PostgresDatabase implements Database {
        SET path = $3 || substring(path from $4),
            parent_path = $3 || substring(parent_path from $4),
            updated_at = NOW()
+       WHERE user_id = $1 AND path LIKE $2`,
+      [userId, oldPrefix + "/%", newPrefix, oldPrefix.length + 1]
+    );
+    await this.client.query(
+      `UPDATE ${this.table}_tags
+       SET path = $3 || substring(path from $4)
        WHERE user_id = $1 AND path LIKE $2`,
       [userId, oldPrefix + "/%", newPrefix, oldPrefix.length + 1]
     );
@@ -177,6 +205,75 @@ export class PostgresDatabase implements Database {
     const { rows } = await this.client.query(
       `SELECT * FROM ${this.table} WHERE user_id = $1 AND name LIKE $2 ESCAPE '\\'`,
       [userId, likePattern]
+    );
+    return rows.map(rowToNode);
+  }
+
+  // ── Tags ──────────────────────────────────────────────────────────────
+
+  async addTag(userId: string, path: string, tag: string): Promise<void> {
+    await this.client.query(
+      `INSERT INTO ${this.table}_tags (user_id, path, tag) VALUES ($1, $2, $3)
+       ON CONFLICT DO NOTHING`,
+      [userId, path, tag]
+    );
+  }
+
+  async removeTag(userId: string, path: string, tag: string): Promise<void> {
+    await this.client.query(
+      `DELETE FROM ${this.table}_tags WHERE user_id = $1 AND path = $2 AND tag = $3`,
+      [userId, path, tag]
+    );
+  }
+
+  async getTagsForPath(userId: string, path: string): Promise<string[]> {
+    const { rows } = await this.client.query(
+      `SELECT tag FROM ${this.table}_tags WHERE user_id = $1 AND path = $2 ORDER BY tag`,
+      [userId, path]
+    );
+    return rows.map((r) => r.tag as string);
+  }
+
+  async findByTag(userId: string, tag: string, pathPrefix?: string): Promise<NodeRow[]> {
+    if (pathPrefix && pathPrefix !== "/") {
+      const { rows } = await this.client.query(
+        `SELECT n.* FROM ${this.table} n
+         INNER JOIN ${this.table}_tags t ON n.user_id = t.user_id AND n.path = t.path
+         WHERE n.user_id = $1 AND t.tag = $2
+         AND (n.path = $3 OR n.path LIKE $4)
+         ORDER BY n.path`,
+        [userId, tag, pathPrefix, pathPrefix + "/%"]
+      );
+      return rows.map(rowToNode);
+    }
+    const { rows } = await this.client.query(
+      `SELECT n.* FROM ${this.table} n
+       INNER JOIN ${this.table}_tags t ON n.user_id = t.user_id AND n.path = t.path
+       WHERE n.user_id = $1 AND t.tag = $2
+       ORDER BY n.path`,
+      [userId, tag]
+    );
+    return rows.map(rowToNode);
+  }
+
+  // ── Recent ────────────────────────────────────────────────────────────
+
+  async listRecent(userId: string, limit: number = 20, pathPrefix?: string): Promise<NodeRow[]> {
+    if (pathPrefix && pathPrefix !== "/") {
+      const { rows } = await this.client.query(
+        `SELECT * FROM ${this.table}
+         WHERE user_id = $1 AND is_dir = FALSE
+         AND (path = $2 OR path LIKE $3)
+         ORDER BY updated_at DESC LIMIT $4`,
+        [userId, pathPrefix, pathPrefix + "/%", limit]
+      );
+      return rows.map(rowToNode);
+    }
+    const { rows } = await this.client.query(
+      `SELECT * FROM ${this.table}
+       WHERE user_id = $1 AND is_dir = FALSE
+       ORDER BY updated_at DESC LIMIT $2`,
+      [userId, limit]
     );
     return rows.map(rowToNode);
   }

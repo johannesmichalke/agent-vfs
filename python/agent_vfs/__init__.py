@@ -16,6 +16,12 @@ from .schema import (
     sqlite_schema,
     postgres_schema,
 )
+from .search import (
+    SearchIndex,
+    open_search,
+    open_embeddings,
+    split_into_chunks,
+)
 
 __all__ = [
     "FileSystem",
@@ -36,4 +42,8 @@ __all__ = [
     "NotDirectoryError",
     "EditConflictError",
     "FileSizeError",
+    "SearchIndex",
+    "open_search",
+    "open_embeddings",
+    "split_into_chunks",
 ]
